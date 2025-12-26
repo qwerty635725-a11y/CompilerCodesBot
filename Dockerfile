@@ -11,7 +11,7 @@ RUN npm install
 
 COPY . .
 
-RUN mkdir -p tmp
+RUN mkdir -p /app/tmp && chmod 777 /app/tmp
 
 ENV NODE_ENV=production
 
