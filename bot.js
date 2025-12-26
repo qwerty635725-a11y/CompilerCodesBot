@@ -6,35 +6,24 @@ import { runJS, runPython, runCpp } from "./compiler/index.js";
 dotenv.config();
 
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
-
-const OWNER_IDS = process.env.OWNER_ID.split(",").map(id => id.trim());
+const OWNER_IDS = process.env.OWNER_ID.split(",");
 
 const state = new Map();
-const lastMsg = new Map();
 const antiSpam = new Map();
+const lastMsg = new Map();
 
-// ───────── УТИЛИТЫ ─────────
 function isOwner(id) {
   return OWNER_IDS.includes(String(id));
 }
 
 function isSpam(id) {
   const now = Date.now();
-  if (antiSpam.has(id) && now - antiSpam.get(id) < 2500) return true;
+  if (antiSpam.has(id) && now - antiSpam.get(id) < 2000) return true;
   antiSpam.set(id, now);
   return false;
 }
 
-async function clean(chat) {
-  const m = lastMsg.get(chat);
-  if (!m) return;
-  try {
-    if (m.user) await bot.deleteMessage(chat, m.user);
-    if (m.bot) await bot.deleteMessage(chat, m.bot);
-  } catch {}
-}
-
-// ───────── МЕНЮ ─────────
+// ───────── MENUS ─────────
 const mainMenu = {
   reply_markup: {
     keyboard: [[{ text: "🛠 Компилировать" }], [{ text: "📄 О боте" }]],
@@ -50,24 +39,23 @@ const langMenu = {
 };
 
 // ───────── START ─────────
-bot.onText(/\/start/, async msg => {
-  await clean(msg.chat.id);
+bot.onText(/\/start/, async (msg) => {
   const sent = await bot.sendPhoto(msg.chat.id, fs.createReadStream("start.jpg"), {
-    caption: "👋 Добро пожаловать!\nВыберите действие:",
+    caption: "👋 Добро пожаловать!",
     ...mainMenu
   });
   lastMsg.set(msg.chat.id, { user: msg.message_id, bot: sent.message_id });
 });
 
-// ───────── ОСНОВНАЯ ЛОГИКА ─────────
-bot.on("message", async msg => {
+// ───────── MAIN LOGIC ─────────
+bot.on("message", async (msg) => {
   const id = msg.chat.id;
   const text = msg.text;
 
   if (isSpam(id)) return;
 
   if (text === "📄 О боте") {
-    const sent = await bot.sendMessage(id, "🤖 Бот компилирует JS / Python / C++");
+    const sent = await bot.sendMessage(id, "🤖 Компилятор JS / Python / C++");
     lastMsg.set(id, { user: msg.message_id, bot: sent.message_id });
     return;
   }
@@ -94,13 +82,13 @@ bot.on("message", async msg => {
   const user = state.get(id);
   if (!user) return;
 
+  let result;
   const owner = isOwner(id);
 
-  let result;
   try {
-    if (user.lang === "JS") result = await runJS(text, owner);
-    if (user.lang === "Python") result = await runPython(text, owner);
-    if (user.lang === "C++") result = await runCpp(text, owner);
+    if (user.lang === "JS") result = await runJS(text, !owner);
+    if (user.lang === "Python") result = await runPython(text, !owner);
+    if (user.lang === "C++") result = await runCpp(text, !owner);
   } catch (e) {
     result = String(e);
   }
