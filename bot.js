@@ -141,3 +141,6 @@ async function execute(chatId, msgId) {
 
   state.delete(chatId);
 }
+bot.on("polling_error", (error) => {
+  console.error("Polling error:", error.message);
+});
