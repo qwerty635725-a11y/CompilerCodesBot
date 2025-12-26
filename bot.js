@@ -4,99 +4,140 @@ import fs from "fs";
 import { runJS, runPython, runCpp } from "./compiler/index.js";
 
 dotenv.config();
-
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
-const OWNER_IDS = process.env.OWNER_ID.split(",");
 
+const OWNER = process.env.OWNER_ID;
 const state = new Map();
-const antiSpam = new Map();
 const lastMsg = new Map();
 
+// ---------- HELPERS ----------
 function isOwner(id) {
-  return OWNER_IDS.includes(String(id));
+  return String(id) === String(OWNER);
 }
 
-function isSpam(id) {
-  const now = Date.now();
-  if (antiSpam.has(id) && now - antiSpam.get(id) < 2000) return true;
-  antiSpam.set(id, now);
-  return false;
+function keyboard(buttons) {
+  return { reply_markup: { inline_keyboard: buttons } };
 }
 
-// ───────── MENUS ─────────
-const mainMenu = {
-  reply_markup: {
-    keyboard: [[{ text: "🛠 Компилировать" }], [{ text: "📄 О боте" }]],
-    resize_keyboard: true
-  }
-};
+async function edit(chat, msgId, text, kb) {
+  await bot.editMessageText(text, {
+    chat_id: chat,
+    message_id: msgId,
+    reply_markup: kb?.reply_markup
+  });
+}
 
-const langMenu = {
-  reply_markup: {
-    keyboard: [[{ text: "JS" }, { text: "C++" }, { text: "Python" }], [{ text: "⬅ Назад" }]],
-    resize_keyboard: true
-  }
-};
-
-// ───────── START ─────────
+// ---------- START ----------
 bot.onText(/\/start/, async (msg) => {
   const sent = await bot.sendPhoto(msg.chat.id, fs.createReadStream("start.jpg"), {
-    caption: "👋 Добро пожаловать!",
-    ...mainMenu
+    caption: "👋 Добро пожаловать!\nВыберите действие:",
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "🛠 Компилировать", callback_data: "compile" }],
+        [{ text: "📄 О боте", callback_data: "about" }]
+      ]
+    }
   });
-  lastMsg.set(msg.chat.id, { user: msg.message_id, bot: sent.message_id });
+  lastMsg.set(msg.chat.id, sent.message_id);
 });
 
-// ───────── MAIN LOGIC ─────────
+// ---------- CALLBACKS ----------
+bot.on("callback_query", async (q) => {
+  const id = q.message.chat.id;
+  const msgId = q.message.message_id;
+  const data = q.data;
+
+  if (data === "about") {
+    return edit(id, msgId, "🤖 Бот компилирует JS / Python / C++", {
+      inline_keyboard: [[{ text: "⬅ Назад", callback_data: "back" }]]
+    });
+  }
+
+  if (data === "compile") {
+    return edit(id, msgId, "Выберите язык:", {
+      inline_keyboard: [
+        [{ text: "JS", callback_data: "lang_js" }],
+        [{ text: "Python", callback_data: "lang_py" }],
+        [{ text: "C++", callback_data: "lang_cpp" }],
+        [{ text: "⬅ Назад", callback_data: "back" }]
+      ]
+    });
+  }
+
+  if (data === "back") {
+    return edit(id, msgId, "Главное меню", {
+      inline_keyboard: [
+        [{ text: "🛠 Компилировать", callback_data: "compile" }],
+        [{ text: "📄 О боте", callback_data: "about" }]
+      ]
+    });
+  }
+
+  if (data.startsWith("lang_")) {
+    const lang = data.split("_")[1];
+    state.set(id, { lang, step: "code" });
+
+    return edit(id, msgId, `✍️ Введите код (${lang})`, {
+      inline_keyboard: [[{ text: "⬅ Назад", callback_data: "back" }]]
+    });
+  }
+
+  if (data === "need_input_yes") {
+    const st = state.get(id);
+    st.step = "input";
+    return edit(id, msgId, "✍️ Введите входные данные:", {
+      inline_keyboard: [[{ text: "⬅ Назад", callback_data: "back" }]]
+    });
+  }
+
+  if (data === "need_input_no") {
+    const st = state.get(id);
+    st.input = "";
+    return execute(id, msgId);
+  }
+});
+
+// ---------- ОБРАБОТКА ТЕКСТА ----------
 bot.on("message", async (msg) => {
   const id = msg.chat.id;
-  const text = msg.text;
+  const st = state.get(id);
+  if (!st) return;
 
-  if (isSpam(id)) return;
+  if (st.step === "code") {
+    st.code = msg.text;
+    st.step = "ask_input";
 
-  if (text === "📄 О боте") {
-    const sent = await bot.sendMessage(id, "🤖 Компилятор JS / Python / C++");
-    lastMsg.set(id, { user: msg.message_id, bot: sent.message_id });
-    return;
+    return edit(id, lastMsg.get(id), "Нужны входные данные?", {
+      inline_keyboard: [
+        [{ text: "Да", callback_data: "need_input_yes" }],
+        [{ text: "Нет", callback_data: "need_input_no" }]
+      ]
+    });
   }
 
-  if (text === "🛠 Компилировать") {
-    const sent = await bot.sendMessage(id, "Выберите язык:", langMenu);
-    lastMsg.set(id, { user: msg.message_id, bot: sent.message_id });
-    return;
+  if (st.step === "input") {
+    st.input = msg.text;
+    return execute(id, lastMsg.get(id));
   }
+});
 
-  if (text === "⬅ Назад") {
-    const sent = await bot.sendMessage(id, "Главное меню", mainMenu);
-    lastMsg.set(id, { user: msg.message_id, bot: sent.message_id });
-    return;
-  }
-
-  if (["JS", "C++", "Python"].includes(text)) {
-    state.set(id, { lang: text });
-    const sent = await bot.sendMessage(id, `✍️ Введите код (${text})`);
-    lastMsg.set(id, { user: msg.message_id, bot: sent.message_id });
-    return;
-  }
-
-  const user = state.get(id);
-  if (!user) return;
+// ---------- EXECUTION ----------
+async function execute(chatId, msgId) {
+  const st = state.get(chatId);
+  const isOwner = String(chatId) === String(OWNER);
 
   let result;
-  const owner = isOwner(id);
-
   try {
-    if (user.lang === "JS") result = await runJS(text, !owner);
-    if (user.lang === "Python") result = await runPython(text, !owner);
-    if (user.lang === "C++") result = await runCpp(text, !owner);
+    if (st.lang === "js") result = await runJS(st.code, !isOwner);
+    if (st.lang === "python") result = await runPython(st.code, !isOwner);
+    if (st.lang === "cpp") result = await runCpp(st.code, !isOwner);
   } catch (e) {
     result = String(e);
   }
 
-  const sent = await bot.sendMessage(id, `📤 Результат:\n\n${result}`, {
-    reply_markup: { keyboard: [[{ text: "⬅ Назад" }]], resize_keyboard: true }
+  await edit(chatId, msgId, `📤 Результат:\n\n${result}`, {
+    inline_keyboard: [[{ text: "⬅ Назад", callback_data: "back" }]]
   });
 
-  lastMsg.set(id, { user: msg.message_id, bot: sent.message_id });
-  state.delete(id);
-});
+  state.delete(chatId);
+}
